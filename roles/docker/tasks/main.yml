@@ -1,0 +1,25 @@
+---
+- name: instala epel
+  yum: name=http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noarch.rpm state=present
+
+- name: instala docker
+  yum: name=docker-io state=present enablerepo=epel-testing
+
+- name: device-mapper atualizado
+  yum: name=device-mapper-1.02.90-2.el6_6.3.x86_64 state=present
+
+- name: move pasta docker para opt
+  shell: creates=/opt/docker mv /var/lib/docker /opt
+
+- name: link simbolico para docker
+  file: dest=/var/lib/docker src=/opt/docker state=link
+
+- name: grupo docker
+  group: name=docker state=present
+
+- name: usuario inovapar no grupo docker
+  user: name=inovapar groups=docker append=yes
+
+- name: inicializa e habilita docker
+  service: name=docker state=started enabled=yes
+

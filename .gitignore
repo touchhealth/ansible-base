@@ -1,0 +1,6 @@
+.vagrant
+*.box
+ansible-password.txt
+.project
+.settings
+target
