@@ -8,7 +8,8 @@ def main():
 		argument_spec = dict(
 			state = dict(default = 'present', choices = ['present', 'absent']),
 			containers = dict(required = True),
-			required_restart = dict(required = False)
+			required_restart = dict(required = False),
+			skip_remove_unused_images = dict(default = False)
 		),
 		supports_check_mode = True
 	)
@@ -17,7 +18,9 @@ def main():
 	state = params['state']
 	containers = params['containers']
 	required_restart = params['required_restart']
+	skip_remove_unused_images = params['skip_remove_unused_images']
 	
+	removed_images = []
 	started_containers = []
 	stopped_containers = []
 	removed_containers = []
@@ -25,11 +28,17 @@ def main():
 
 	dict_containers = build_dict_containers(containers)
 	
-	inspect_containers_state(module, containers, dict_containers)
+	if not skip_remove_unused_images:
+		removed_images, failed_message = remove_unused_images(module)
+
+	if failed_message is None:
+		inspect_containers_state(module, containers, dict_containers)
 	
-	decide_containers_to_update(containers, dict_containers, required_restart, state)
-	
-	stopped_containers, removed_containers, failed_message = stop_and_remove_containers(module, containers, dict_containers)
+	if failed_message is None:
+		decide_containers_to_update(containers, dict_containers, required_restart, state)
+		
+	if failed_message is None:
+		stopped_containers, removed_containers, failed_message = stop_and_remove_containers(module, containers, dict_containers)
 	
 	if failed_message is None:
 		started_containers, failed_message = start_containers(module, containers, dict_containers, state)
@@ -38,6 +47,7 @@ def main():
 		module.fail_json(
 			msg = failed_message,
 			dict_containers    = dict_containers,
+			removed_images     = removed_images,
 			required_restart   = required_restart,
 			started_containers = started_containers,
 			stopped_containers = stopped_containers,
@@ -47,6 +57,7 @@ def main():
 		module.exit_json(
 			changed = (started_containers or stopped_containers or removed_containers),
 			dict_containers    = dict_containers,
+			removed_images     = removed_images,
 			required_restart   = required_restart,
 			started_containers = started_containers,
 			stopped_containers = stopped_containers,
@@ -67,7 +78,7 @@ def mark_to_update(dict_container):
 	for dependent in dict_container['required_by']:
 		mark_to_update(dependent)
 
-def booleanValue(value):
+def boolean_value(value):
 	if isinstance(value, bool):
 		return value
 	if isinstance(value, str):
@@ -76,7 +87,7 @@ def booleanValue(value):
 
 def should_update(dict_container, required_restart, state):
 	if state == 'present':
-		if dict_container['name'] in required_restart and booleanValue(required_restart[dict_container['name']]):
+		if dict_container['name'] in required_restart and boolean_value(required_restart[dict_container['name']]):
 			return True
 		if dict_container['status'] == '':
 			return True
@@ -173,6 +184,42 @@ def inspect_container_state(module, container_name):
 		current_config_hash = docker_inspect_label(module, 'configHash', container_name)
 	
 	return (status, current_commit, current_config_hash)
+
+def retrieve_image_ids(module):
+	rc, out, err = module.run_command(['docker', 'images', '-q'])
+
+	image_short_ids = [item for item in out.split('\n') if item]
+	image_ids = [docker_inspect(module, '{{.Id}}', item)[1] for item in image_short_ids]
+
+	return image_ids
+
+def retrieve_used_image_ids(module):
+	rc, out, err = module.run_command(['docker', 'ps', '-a', '-q'])
+
+	container_ids = [item for item in out.split('\n') if item]
+	used_image_ids = [docker_inspect(module, '{{.Image}}', item)[1] for item in container_ids]
+
+	return used_image_ids
+
+def remove_unused_images(module):
+	image_ids = retrieve_image_ids(module)
+	
+	used_image_ids = retrieve_used_image_ids(module)
+
+	unused_images = [item for item in image_ids if item not in used_image_ids]
+
+	removed_unused_images = []
+	failed_message = None
+
+	for unused_image in unused_images:
+		rc, out, err = docker_exec_checked_command(module, ['docker', 'rmi', unused_image])
+		if rc == 0:
+			removed_unused_images.append(unused_image)
+		else:
+			failed_message = err
+			break
+
+	return removed_unused_images, failed_message
 
 def build_dict_containers(containers):
 	dict_containers = dict()
@@ -297,7 +344,7 @@ def docker_pull(module, image):
 	module.run_command(cmd)
 
 def docker_rm(module, container_name):
-	return docker_exec_checked_command(module, [ 'docker', 'rm', container_name ])
+	return docker_exec_checked_command(module, [ 'docker', 'rm', '-fv', container_name ])
 
 def docker_stop(module, container_name):
 	return docker_exec_checked_command(module, [ 'docker', 'stop', container_name ])
