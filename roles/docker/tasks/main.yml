@@ -23,3 +23,6 @@
 - name: inicializa e habilita docker
   service: name=docker state=started enabled=yes
 
+# dependência para recuperar os manifests das imagens, usado depois também pelo app-state
+- name: instala python-httplib2
+  yum: name=python-httplib2 state=present

@@ -2,14 +2,14 @@
 
 import json
 import hashlib
+import httplib2
 
 def main():
 	module = AnsibleModule(
 		argument_spec = dict(
 			state = dict(default = 'present', choices = ['present', 'absent']),
 			containers = dict(required = True),
-			required_restart = dict(required = False),
-			skip_remove_unused_images = dict(default = False)
+			required_restart = dict(required = False)
 		),
 		supports_check_mode = True
 	)
@@ -18,8 +18,8 @@ def main():
 	state = params['state']
 	containers = params['containers']
 	required_restart = params['required_restart']
-	skip_remove_unused_images = params['skip_remove_unused_images']
 	
+	pulled_images = []
 	removed_images = []
 	started_containers = []
 	stopped_containers = []
@@ -28,37 +28,36 @@ def main():
 
 	dict_containers = build_dict_containers(containers)
 	
-	if not skip_remove_unused_images:
-		removed_images, failed_message = remove_unused_images(module)
+	unused_image_ids = get_unused_image_ids(module)
+
+	inspect_containers_state(module, containers, dict_containers)
+	
+	decide_containers_to_update(containers, dict_containers, required_restart, state)
+	
+	stopped_containers, removed_containers, failed_message = stop_and_remove_containers(module, containers, dict_containers)
+	
+	if failed_message is None:
+		pulled_images, started_containers, failed_message = pull_images_start_containers(module, containers, dict_containers, state)
 
 	if failed_message is None:
-		inspect_containers_state(module, containers, dict_containers)
-	
-	if failed_message is None:
-		decide_containers_to_update(containers, dict_containers, required_restart, state)
-		
-	if failed_message is None:
-		stopped_containers, removed_containers, failed_message = stop_and_remove_containers(module, containers, dict_containers)
-	
-	if failed_message is None:
-		started_containers, failed_message = start_containers(module, containers, dict_containers, state)
+		removed_images, failed_message = remove_images(module, unused_image_ids)
 
 	if failed_message is not None:
 		module.fail_json(
 			msg = failed_message,
 			dict_containers    = dict_containers,
-			removed_images     = removed_images,
 			required_restart   = required_restart,
+			removed_images     = removed_images,
 			started_containers = started_containers,
 			stopped_containers = stopped_containers,
 			removed_containers = removed_containers
 		)
 	else:
 		module.exit_json(
-			changed = (started_containers or stopped_containers or removed_containers),
+			changed = (started_containers or stopped_containers or removed_containers or removed_images),
 			dict_containers    = dict_containers,
-			removed_images     = removed_images,
 			required_restart   = required_restart,
+			removed_images     = removed_images,
 			started_containers = started_containers,
 			stopped_containers = stopped_containers,
 			removed_containers = removed_containers
@@ -112,13 +111,12 @@ def inspect_containers_state(module, containers, dict_containers):
 		dict_container['current_commit'] = current_commit
 		dict_container['current_config_hash'] = current_config_hash
 		
-		docker_pull(module, container['image'])
-		
-		latest_commit = docker_inspect_label(module, 'commitId', container['image'])
+		latest_commit = get_latest_commit(container['registry'], container['image'], container['tag'])
 		
 		dict_container['latest_commit'] = latest_commit
 
-def start_containers(module, containers, dict_containers, state):
+def pull_images_start_containers(module, containers, dict_containers, state):
+	pulled_images = []
 	started_containers = []
 	failed_message = None
 	
@@ -128,6 +126,13 @@ def start_containers(module, containers, dict_containers, state):
 			dict_container = dict_containers[container_name]
 		
 			if dict_container['must_be_updated']:
+				rc, out, err = docker_pull(module, dict_container['image'])
+				if rc == 0:
+					pulled_images.append(dict_container['image'])
+				else:
+					failed_message = err
+					break
+
 				rc, out, err = docker_run(module, dict_container)
 				if rc == 0:
 					started_containers.append(container_name)
@@ -135,7 +140,7 @@ def start_containers(module, containers, dict_containers, state):
 					failed_message = err
 					break
 	
-	return started_containers, failed_message
+	return pulled_images, started_containers, failed_message
 
 def stop_and_remove_containers(module, containers, dict_containers):
 	stopped_containers = []
@@ -183,9 +188,16 @@ def inspect_container_state(module, container_name):
 		
 		current_config_hash = docker_inspect_label(module, 'configHash', container_name)
 	
-	return (status, current_commit, current_config_hash)
+	return status, current_commit, current_config_hash
 
-def retrieve_image_ids(module):
+def get_latest_commit(registry, image, tag):
+	h = httplib2.Http(".cache")
+	headers, content = h.request("http://{0}/v2/{1}/manifests/{2}".format(registry, image, tag), "GET")
+	manifest = json.loads(content)
+	data = json.loads(manifest['history'][0]['v1Compatibility'])
+	return data['config']['Labels']['commitId']
+
+def get_image_ids(module):
 	rc, out, err = module.run_command(['docker', 'images', '-q'])
 
 	image_short_ids = [item for item in out.split('\n') if item]
@@ -193,7 +205,7 @@ def retrieve_image_ids(module):
 
 	return image_ids
 
-def retrieve_used_image_ids(module):
+def get_used_image_ids(module):
 	rc, out, err = module.run_command(['docker', 'ps', '-a', '-q'])
 
 	container_ids = [item for item in out.split('\n') if item]
@@ -201,25 +213,28 @@ def retrieve_used_image_ids(module):
 
 	return used_image_ids
 
-def remove_unused_images(module):
-	image_ids = retrieve_image_ids(module)
+def get_unused_image_ids(module):
+	image_ids = get_image_ids(module)
 	
-	used_image_ids = retrieve_used_image_ids(module)
+	used_image_ids = get_used_image_ids(module)
 
-	unused_images = [item for item in image_ids if item not in used_image_ids]
+	unused_images_ids = [item for item in image_ids if item not in used_image_ids]
 
-	removed_unused_images = []
+	return unused_images_ids
+
+def remove_images(module, images):
+	removed_images = []
 	failed_message = None
 
-	for unused_image in unused_images:
-		rc, out, err = docker_exec_checked_command(module, ['docker', 'rmi', unused_image])
+	for image in images:
+		rc, out, err = docker_exec_checked_command(module, ['docker', 'rmi', image])
 		if rc == 0:
-			removed_unused_images.append(unused_image)
+			removed_images.append(image)
 		else:
 			failed_message = err
 			break
 
-	return removed_unused_images, failed_message
+	return removed_images, failed_message
 
 def build_dict_containers(containers):
 	dict_containers = dict()
@@ -228,6 +243,7 @@ def build_dict_containers(containers):
 		n_container = normalize_container(container)
 		dict_container = dict(
 			name = n_container['name'],
+			image = '{0}/{1}:{2}'.format(container['registry'], container['image'], container['tag']),
 			container = n_container,
 			required_by = [],
 			latest_config_hash = json_hash(n_container),
@@ -252,7 +268,8 @@ def build_dict_containers(containers):
 	return dict_containers
 
 def normalize_container(container):
-	n_container = dict([(key, container[key]) for key in ['name', 'daemon', 'image', 'environment_variables'] if key in container])
+	attr_as_is = ['name', 'daemon', 'registry', 'image', 'tag', 'environment_variables']
+	n_container = dict([(key, container[key]) for key in attr_as_is if key in container])
 	
 	normalize_volumes(n_container, container)
 	normalize_ports(n_container, container)
@@ -287,7 +304,6 @@ def normalize_list_of_dicts(n_container, container, name, keys, sort_key):
 		n_list.sort(key = lambda i: i[sort_key])
 	
 	n_container[name] = n_list
-
 
 def build_docker_run(dict_container):
 	container = dict_container['container']
@@ -325,9 +341,12 @@ def build_docker_run(dict_container):
 		for key in variables:
 			cmd += ['-e', '{0}={1}'.format(key, variables[key])]
 
-	cmd += [container['image']]
+	cmd += [dict_container['image']]
 	
 	return cmd
+
+def docker_pull(module, image):
+	return docker_exec_checked_command(module, ['docker', 'pull', image])
 
 def docker_run(module, dict_container):
 	container = dict_container['container']
@@ -339,15 +358,11 @@ def docker_run(module, dict_container):
 	
 	return docker_exec_checked_command(module, cmd)
 
-def docker_pull(module, image):
-	cmd = ['docker', 'pull', image]
-	module.run_command(cmd)
+def docker_stop(module, container_name):
+	return docker_exec_checked_command(module, [ 'docker', 'stop', container_name ])
 
 def docker_rm(module, container_name):
 	return docker_exec_checked_command(module, [ 'docker', 'rm', '-fv', container_name ])
-
-def docker_stop(module, container_name):
-	return docker_exec_checked_command(module, [ 'docker', 'stop', container_name ])
 
 def docker_exec_checked_command(module, cmd):
 	rc, out, err = 0, '', ''
