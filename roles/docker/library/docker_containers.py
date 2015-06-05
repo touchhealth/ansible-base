@@ -4,6 +4,7 @@ import json
 import hashlib
 import httplib2
 import os
+import shutil
 import tempfile
 
 def main():
@@ -46,12 +47,13 @@ def run_complex_command(module, cmd):
 		return 1, None, 'No type defined in custom command'
 
 	cmd_type = cmd['type']
-	if cmd_type == 'patches':
-		return run_patches_command(module, cmd['args'])
-
+	if cmd_type == 'patch_image':
+		return run_patch_image(module, cmd['args'])
+	if cmd_type == 'remove_images':
+		return run_remove_images(module, cmd['args'])
 	return 1, None, 'Unknown command type: {0}'.format(cmd_type)
 
-def run_patches_command(module, args):
+def run_patch_image(module, args):
 	#   args = {
 	#     image: localhost:5000/vedocs-elo:latest,
 	#     patches: [
@@ -63,7 +65,7 @@ def run_patches_command(module, args):
 	image = args['image']
 	patches = args['patches']
 	result_image = args['result_image']
-	temp_dir = tempfile.mkdtemp()
+	temp_dir = tempfile.mkdtemp(prefix = 'tmp-docker-build-')
 
 	dockerfile_path = os.path.join(temp_dir, 'Dockerfile')
 	with open(dockerfile_path, 'w') as dockerfile:
@@ -77,16 +79,42 @@ def run_patches_command(module, args):
 
 				if not tail:
 					head, tail = os.path.split(head)
-
+				# copia dos arquivos realizada por comando nativo e flag -p para
+				# manter os metadados e permitir a utilizacao dos caches do docker
 				rc, out, err = module.run_command(['cp', '-rp', patch['add']['host'], temp_dir])
 				if rc != 0:
 					return rc, out, err
 
 				dockerfile.write('ADD {0} {1}\n'.format(tail, patch['add']['image']))
+	try:
+		return module.run_command(
+			['docker', 'build', '-t={0}'.format(result_image), temp_dir]
+		)
+	finally:
+		shutil.rmtree(temp_dir)
 
-	return module.run_command(
-		['docker', 'build', '-t={0}'.format(result_image), temp_dir]
-	)
+def run_remove_images(module, args):
+	#   args = dict(
+	#		candidates_for_removal = [abc,def],
+	#		used_image_names = [localhost:5000/solr-vedocs:latest, localhost:5000/vedocs:latest_12345]
+	#	)
+	candidates_for_removal = args['candidates_for_removal']
+	used_image_names = args['used_image_names']
+
+	used_image_ids = []
+	for used_image_name in used_image_names:
+		rc, out, err = docker_inspect(module, "{{.Id}}", used_image_name)
+		if rc == 0:
+			used_image_ids.append(out)
+
+	unused_image_ids = [image_id for image_id in candidates_for_removal if image_id not in used_image_ids]
+
+	for unused_image_id in unused_image_ids:
+		rc, out, err = module.run_command(['docker', 'rmi', unused_image_id])
+		if rc != 0:
+			return rc, out, err
+
+	return 0, None, None
 
 def execute_plan(module, plan, plan_file):
 	executed = []
@@ -129,18 +157,20 @@ def build_plan(module, params):
 
 	dict_containers = build_dict_containers(containers)
 
-	unused_image_ids = get_unused_image_ids(module)
+	candidates_for_removal = get_candidates_for_removal(module)
 
 	decide_containers_to_update(module, containers, dict_containers, required_restart, state)
 	
 	stop_cmds = stop_containers(containers, dict_containers)
 
-	start_cmds = start_containers(containers, dict_containers, state)
+	prepare_cmds = prepare_images(containers, dict_containers, state)
 
-	rmi_cmds = remove_images(unused_image_ids)
+	start_cmds, used_image_names = start_containers(containers, dict_containers, state)
+
+	rmi_cmds = remove_images(candidates_for_removal, used_image_names)
 
 	if stop_cmds or start_cmds:
-		return stop_cmds + rmi_cmds + start_cmds
+		return stop_cmds + prepare_cmds + rmi_cmds + start_cmds
 	else:
 		return []
 
@@ -197,28 +227,43 @@ def inspect_containers_state(module, containers, dict_containers):
 		
 		dict_container['latest_commit'] = latest_commit
 
-def start_containers(containers, dict_containers, state):
+def prepare_images(containers, dict_containers, state):
 	cmds = []
 	
 	if state == 'present':
 		for container in containers:
 			container_name = container['name']
 			dict_container = dict_containers[container_name]
-		
+			
 			if dict_container['must_be_updated']:
 				cmds.append(['docker', 'pull', dict_container['image']])
 				if 'patches' in dict_container['container']:
 					cmds.append(dict(
-						type = 'patches',
+						type = 'patch_image',
 						args = dict(
 							image = dict_container['image'],
 							patches = dict_container['container']['patches'],
 							result_image = get_patched_image_name(dict_container)
 						)
 					))
-				cmds.append(build_docker_run(dict_container))
-	
 	return cmds
+
+
+def start_containers(containers, dict_containers, state):
+	cmds = []
+	used_image_names = []
+	
+	if state == 'present':
+		for container in containers:
+			container_name = container['name']
+			dict_container = dict_containers[container_name]
+
+			if dict_container['must_be_updated']:
+				cmd, used_image_name = build_docker_run(dict_container)
+				cmds.append(cmd)
+				used_image_names.append(used_image_name)
+	
+	return cmds, used_image_names
 
 # a imagem com patch sera montada sem endereco do registro, com o nome original,
 # e a tag sera a tag original + a hash dos patches; caso algum arquivo do patch
@@ -271,14 +316,14 @@ def get_latest_commit(registry, image, tag):
 	data = json.loads(manifest['history'][0]['v1Compatibility'])
 	return data['config']['Labels']['commitId']
 
-def get_unused_image_ids(module):
+def get_candidates_for_removal(module):
 	image_ids = get_image_ids(module)
 	
 	used_image_ids = get_used_image_ids(module)
 
-	unused_images_ids = [item for item in image_ids if item not in used_image_ids]
+	candidates_for_removal = [item for item in image_ids if item not in used_image_ids]
 
-	return unused_images_ids
+	return candidates_for_removal
 
 def get_image_ids(module):
 	rc, out, err = module.run_command(['docker', 'images', '-q', '--no-trunc'])
@@ -295,12 +340,17 @@ def get_used_image_ids(module):
 
 	return used_image_ids
 
-def remove_images(images):
+def remove_images(candidates_for_removal, used_image_names):
 	cmds = []
 
-	for image in images:
-		cmds.append(['docker', 'rmi', image])
-		
+	cmds.append(dict(
+		type = 'remove_images',
+		args = dict(
+			candidates_for_removal = candidates_for_removal,
+			used_image_names = used_image_names
+		)
+	))
+
 	return cmds
 
 def build_dict_containers(containers):
@@ -414,7 +464,7 @@ def build_docker_run(dict_container):
 		image = dict_container['image']
 	cmd += [image]
 	
-	return cmd
+	return cmd, image
 
 def docker_inspect_label(module, label_name, name):
 	label = ''
