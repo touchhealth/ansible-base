@@ -3,6 +3,8 @@
 import json
 import hashlib
 import httplib2
+import os
+import tempfile
 
 def main():
 	module = AnsibleModule(
@@ -39,6 +41,53 @@ def main():
 			executed = executed
 		)
 
+def run_complex_command(module, cmd):
+	if 'type' not in cmd:
+		return 1, None, 'No type defined in custom command'
+
+	cmd_type = cmd['type']
+	if cmd_type == 'patches':
+		return run_patches_command(module, cmd['args'])
+
+	return 1, None, 'Unknown command type: {0}'.format(cmd_type)
+
+def run_patches_command(module, args):
+	#   args = {
+	#     image: localhost:5000/vedocs-elo:latest,
+	#     patches: [
+	#       { add: { host: x, image: y } },
+	#       { run: echo 'viva' }
+	#     ],
+	#     result_image: vedocs-elo:latest_hash
+	#   }
+	image = args['image']
+	patches = args['patches']
+	result_image = args['result_image']
+	temp_dir = tempfile.mkdtemp()
+
+	dockerfile_path = os.path.join(temp_dir, 'Dockerfile')
+	with open(dockerfile_path, 'w') as dockerfile:
+		dockerfile.write('FROM {0}\n'.format(image))
+
+		for patch in patches:
+			if 'run' in patch:
+				dockerfile.write('RUN {0}\n'.format(patch['run']))
+			elif 'add' in patch:
+				head, tail = os.path.split(patch['add']['host'])
+
+				if not tail:
+					head, tail = os.path.split(head)
+
+				rc, out, err = module.run_command(['cp', '-rp', patch['add']['host'], temp_dir])
+				if rc != 0:
+					return rc, out, err
+
+				dockerfile.write('ADD {0} {1}\n'.format(tail, patch['add']['image']))
+
+	return module.run_command(
+		['docker', 'build', '-t={0}'.format(result_image), temp_dir]
+	)
+
 def execute_plan(module, plan, plan_file):
 	executed = []
 	failed_message = None
@@ -46,11 +95,13 @@ def execute_plan(module, plan, plan_file):
 	while plan:
 		cmd = plan.pop(0)
 
-		rc, out, err = 0, '', ''
+		rc, out, err = 0, None, None
 
 		if not module.check_mode:
-			rc, out, err = module.run_command(cmd)
-
+			if isinstance(cmd, basestring) or isinstance(cmd, list):
+				rc, out, err = module.run_command(cmd)
+			elif isinstance(cmd, dict):
+				rc, out, err = run_complex_command(module, cmd)
 		if rc == 0:
 			executed.append(cmd)
 			dump_plan(plan, plan_file)
@@ -77,20 +128,24 @@ def build_plan(module, params):
 	required_restart = params['required_restart']
 
 	dict_containers = build_dict_containers(containers)
+
 	unused_image_ids = get_unused_image_ids(module)
-	inspect_containers_state(module, containers, dict_containers)
-	decide_containers_to_update(containers, dict_containers, required_restart, state)
+
+	decide_containers_to_update(module, containers, dict_containers, required_restart, state)
 	
-	stop_and_remove_cmds = stop_and_remove_containers(containers, dict_containers)
-	pull_and_start_cmds = pull_images_start_containers(containers, dict_containers, state)
+	stop_cmds = stop_containers(containers, dict_containers)
+
+	start_cmds = start_containers(containers, dict_containers, state)
+
 	rmi_cmds = remove_images(unused_image_ids)
 
-	if stop_and_remove_cmds or pull_and_start_cmds:
-		return stop_and_remove_cmds + pull_and_start_cmds + rmi_cmds
+	if stop_cmds or start_cmds:
+		return stop_cmds + rmi_cmds + start_cmds
 	else:
 		return []
 
-def decide_containers_to_update(containers, dict_containers, required_restart, state):	
+def decide_containers_to_update(module, containers, dict_containers, required_restart, state):
+	inspect_containers_state(module, containers, dict_containers)
 	for container in containers:
 		container_name = container['name']
 		dict_container = dict_containers[container_name]
@@ -142,7 +197,7 @@ def inspect_containers_state(module, containers, dict_containers):
 		
 		dict_container['latest_commit'] = latest_commit
 
-def pull_images_start_containers(containers, dict_containers, state):
+def start_containers(containers, dict_containers, state):
 	cmds = []
 	
 	if state == 'present':
@@ -152,11 +207,29 @@ def pull_images_start_containers(containers, dict_containers, state):
 		
 			if dict_container['must_be_updated']:
 				cmds.append(['docker', 'pull', dict_container['image']])
+				if 'patches' in dict_container['container']:
+					cmds.append(dict(
+						type = 'patches',
+						args = dict(
+							image = dict_container['image'],
+							patches = dict_container['container']['patches'],
+							result_image = get_patched_image_name(dict_container)
+						)
+					))
 				cmds.append(build_docker_run(dict_container))
 	
 	return cmds
 
-def stop_and_remove_containers(containers, dict_containers):
+# a imagem com patch sera montada sem endereco do registro, com o nome original,
+# e a tag sera a tag original + a hash dos patches; caso algum arquivo do patch
+# seja diferente, o build do proprio docker devera provocar a renomeacao da imagem 
+# nova para uma a tag previamente existente
+def get_patched_image_name(dict_container):
+	container = dict_container['container']
+	tag = '{0}_{1}'.format(container['tag'], json_hash(container['patches']))
+	return '{0}:{1}'.format(container['image'], tag)
+
+def stop_containers(containers, dict_containers):
 	cmds = []
 	
 	for container in reversed(containers):
@@ -198,11 +271,19 @@ def get_latest_commit(registry, image, tag):
 	data = json.loads(manifest['history'][0]['v1Compatibility'])
 	return data['config']['Labels']['commitId']
 
-def get_image_ids(module):
-	rc, out, err = module.run_command(['docker', 'images', '-q'])
+def get_unused_image_ids(module):
+	image_ids = get_image_ids(module)
+	
+	used_image_ids = get_used_image_ids(module)
 
-	image_short_ids = [item for item in out.split('\n') if item]
-	image_ids = [docker_inspect(module, '{{.Id}}', item)[1] for item in image_short_ids]
+	unused_images_ids = [item for item in image_ids if item not in used_image_ids]
+
+	return unused_images_ids
+
+def get_image_ids(module):
+	rc, out, err = module.run_command(['docker', 'images', '-q', '--no-trunc'])
+
+	image_ids = [item for item in out.split('\n') if item]
 
 	return image_ids
 
@@ -213,15 +294,6 @@ def get_used_image_ids(module):
 	used_image_ids = [docker_inspect(module, '{{.Image}}', item)[1] for item in container_ids]
 
 	return used_image_ids
-
-def get_unused_image_ids(module):
-	image_ids = get_image_ids(module)
-	
-	used_image_ids = get_used_image_ids(module)
-
-	unused_images_ids = [item for item in image_ids if item not in used_image_ids]
-
-	return unused_images_ids
 
 def remove_images(images):
 	cmds = []
@@ -263,7 +335,7 @@ def build_dict_containers(containers):
 	return dict_containers
 
 def normalize_container(container):
-	attr_as_is = ['name', 'daemon', 'registry', 'image', 'tag', 'environment_variables']
+	attr_as_is = ['name', 'daemon', 'registry', 'image', 'tag', 'environment_variables', 'patches']
 	n_container = dict([(key, container[key]) for key in attr_as_is if key in container])
 	
 	normalize_volumes(n_container, container)
@@ -273,20 +345,20 @@ def normalize_container(container):
 
 	return n_container
 
-def normalize_volumes_from(n_container, container):
-	if 'volumes_from' in container:
-		n_container['volumes_from'] = sorted(container['volumes_from'])
-	else:
-		n_container['volumes_from'] = []
-
-def normalize_links(n_container, container):
-	normalize_list_of_dicts(n_container, container, 'links', ['alias', 'name'], 'alias')
-
 def normalize_volumes(n_container, container):
 	normalize_list_of_dicts(n_container, container, 'volumes', ['container', 'host', 'mode'], 'container')
 
 def normalize_ports(n_container, container):
 	normalize_list_of_dicts(n_container, container, 'ports', ['container', 'host'], 'container')
+
+def normalize_links(n_container, container):
+	normalize_list_of_dicts(n_container, container, 'links', ['alias', 'name'], 'alias')
+
+def normalize_volumes_from(n_container, container):
+	if 'volumes_from' in container:
+		n_container['volumes_from'] = sorted(container['volumes_from'])
+	else:
+		n_container['volumes_from'] = []
 
 def normalize_list_of_dicts(n_container, container, name, keys, sort_key):
 	n_list = []
@@ -336,7 +408,11 @@ def build_docker_run(dict_container):
 		for key in variables:
 			cmd += ['-e', '{0}={1}'.format(key, variables[key])]
 
-	cmd += [dict_container['image']]
+	if 'patches' in container:
+		image = get_patched_image_name(dict_container)
+	else:
+		image = dict_container['image']
+	cmd += [image]
 	
 	return cmd
 
@@ -357,8 +433,8 @@ def docker_inspect(module, path, name):
 	
 	return rc, out, err
 
-def json_hash(container):
-	return md5hash(json.dumps(container, sort_keys=True, separators=(',',':')))
+def json_hash(obj):
+	return md5hash(json.dumps(obj, sort_keys=True, separators=(',',':')))
 
 def md5hash(string):
     m = hashlib.md5()
