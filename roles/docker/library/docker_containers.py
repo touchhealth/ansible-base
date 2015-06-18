@@ -111,8 +111,8 @@ def run_remove_images(module, args):
 
 	for unused_image_id in unused_image_ids:
 		rc, out, err = module.run_command(['docker', 'rmi', unused_image_id])
-		if rc != 0:
-			return rc, out, err
+		#if rc != 0:
+		#	return rc, out, err
 
 	return 0, None, None
 
