@@ -5,9 +5,6 @@
 - name: instala docker
   yum: name=docker-io state=present enablerepo=epel-testing
 
-- name: device-mapper atualizado
-  yum: name=device-mapper-1.02.90-2.el6_6.3.x86_64 state=present
-
 - name: move pasta docker para opt
   shell: creates=/opt/docker mv /var/lib/docker /opt
 
