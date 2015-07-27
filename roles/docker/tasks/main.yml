@@ -1,12 +1,20 @@
 ---
-- name: instala epel
-  yum: name=http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noarch.rpm state=present
+- name: registra o repositório yum oficial do docker
+  copy: src=docker.repo dest=/etc/yum.repos.d/docker.repo owner=root group=root mode=0644
 
-- name: instala docker
-  yum: name=docker-io state=present enablerepo=epel-testing
+- name: instala o docker
+  yum: name=docker-engine state=present
 
-- name: move pasta docker para opt
+- name: coleta informações sobre /var/lib/docker
+  stat: path=/var/lib/docker
+  register: docker_stat
+
+- name: move pasta docker para opt se necessário
   shell: creates=/opt/docker mv /var/lib/docker /opt
+  when: docker_stat.stat.isdir is defined and docker_stat.stat.isdir
+
+- name: garante a existência da pasta /opt/docker
+  file: dest=/opt/docker state=directory
 
 - name: link simbolico para docker
   file: dest=/var/lib/docker src=/opt/docker state=link
