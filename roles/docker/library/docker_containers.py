@@ -392,7 +392,7 @@ def build_dict_containers(containers):
 	return dict_containers
 
 def normalize_container(container):
-	attr_as_is = ['name', 'daemon', 'registry', 'image', 'tag', 'environment_variables', 'patches']
+	attr_as_is = ['name', 'daemon', 'registry', 'image', 'tag', 'environment_variables', 'patches', 'args']
 	n_container = dict([(key, container[key]) for key in attr_as_is if key in container])
 	
 	normalize_volumes(n_container, container)
@@ -406,7 +406,7 @@ def normalize_volumes(n_container, container):
 	normalize_list_of_dicts(n_container, container, 'volumes', ['container', 'host', 'mode'], 'container')
 
 def normalize_ports(n_container, container):
-	normalize_list_of_dicts(n_container, container, 'ports', ['container', 'host'], 'container')
+	normalize_list_of_dicts(n_container, container, 'ports', ['container', 'host', 'ip', 'protocol'], 'container')
 
 def normalize_links(n_container, container):
 	normalize_list_of_dicts(n_container, container, 'links', ['alias', 'name'], 'alias')
@@ -443,8 +443,18 @@ def build_docker_run(dict_container):
 	
 	if 'ports' in container:
 		for port in container['ports']:
-			cmd += ['-p', '{0}:{1}'.format(port['host'], port['container'])]
-	
+			# dummy, depois ver como melhorar
+			if 'protocol' in port:
+				if 'ip' in port:
+					cmd += ['-p', '{0}:{1}:{2}/{3}'.format(port['ip'], port['host'], port['container'], port['protocol'])]
+				else:
+					cmd += ['-p', '{0}:{1}/{2}'.format(port['host'], port['container'], port['protocol'])]
+			else:
+				if 'ip' in port:
+					cmd += ['-p', '{0}:{1}:{2}'.format(port['ip'], port['host'], port['container'])]
+				else:
+					cmd += ['-p', '{0}:{1}'.format(port['host'], port['container'])]
+
 	if 'links' in container:
 		for link in container['links']:
 			cmd += ['--link', '{0}:{1}'.format(link['name'], link['alias'])]
@@ -471,6 +481,9 @@ def build_docker_run(dict_container):
 		image = dict_container['image']
 	cmd += [image]
 	
+	if 'args' in container:
+		cmd += container['args']
+
 	return cmd, image
 
 def docker_inspect_label(module, label_name, name):
