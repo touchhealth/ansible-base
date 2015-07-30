@@ -314,7 +314,14 @@ def get_latest_commit(registry, image, tag):
 	headers, content = h.request("http://{0}/v2/{1}/manifests/{2}".format(registry, image, tag), "GET")
 	manifest = json.loads(content)
 	data = json.loads(manifest['history'][0]['v1Compatibility'])
-	return data['config']['Labels']['commitId']
+	
+	config = data['config']
+	labels_key = 'Labels'
+	commit_id_key = 'commitId'
+
+	if labels_key in config and commit_id_key in config[labels_key]:
+		return config[labels_key][commit_id_key]
+	return ''
 
 def get_candidates_for_removal(module):
 	image_ids = get_image_ids(module)
