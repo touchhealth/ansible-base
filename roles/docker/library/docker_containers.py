@@ -311,17 +311,21 @@ def inspect_container_state(module, container_name):
 
 def get_latest_commit(registry, image, tag):
 	h = httplib2.Http(".cache")
-	headers, content = h.request("http://{0}/v2/{1}/manifests/{2}".format(registry, image, tag), "GET")
-	manifest = json.loads(content)
-	data = json.loads(manifest['history'][0]['v1Compatibility'])
+	url = "http://{0}/v2/{1}/manifests/{2}".format(registry, image, tag)
+	try:
+		headers, content = h.request(url, "GET")
+		manifest = json.loads(content)
+		data = json.loads(manifest['history'][0]['v1Compatibility'])
 	
-	config = data['config']
-	labels_key = 'Labels'
-	commit_id_key = 'commitId'
+		config = data['config']
+		labels_key = 'Labels'
+		commit_id_key = 'commitId'
 
-	if labels_key in config and commit_id_key in config[labels_key]:
-		return config[labels_key][commit_id_key]
-	return ''
+		if labels_key in config and commit_id_key in config[labels_key]:
+			return config[labels_key][commit_id_key]
+		return ''
+	except Exception as e:
+		raise Exception('Erro tentando acessar ' + url, e)
 
 def get_candidates_for_removal(module):
 	image_ids = get_image_ids(module)
