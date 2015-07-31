@@ -198,7 +198,7 @@ def boolean_value(value):
 
 def should_update(dict_container, required_restart, state):
 	if state == 'present':
-		if dict_container['name'] in required_restart and boolean_value(required_restart[dict_container['name']]):
+		if required_restart is not None and dict_container['name'] in required_restart and boolean_value(required_restart[dict_container['name']]):
 			return True
 		if dict_container['status'] == '':
 			return True
