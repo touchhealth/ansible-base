@@ -310,7 +310,7 @@ def inspect_container_state(module, container_name):
 	return status, current_commit, current_config_hash
 
 def get_latest_commit(registry, image, tag):
-	h = httplib2.Http(".cache")
+	h = httplib2.Http()
 	url = "http://{0}/v2/{1}/manifests/{2}".format(registry, image, tag)
 	try:
 		headers, content = h.request(url, "GET")
@@ -325,7 +325,8 @@ def get_latest_commit(registry, image, tag):
 			return config[labels_key][commit_id_key]
 		return ''
 	except Exception as e:
-		raise Exception('Erro tentando acessar ' + url, e)
+		import traceback
+		raise Exception('Erro tentando acessar ' + url + '\n' + traceback.format_exc())
 
 def get_candidates_for_removal(module):
 	image_ids = get_image_ids(module)
@@ -396,7 +397,7 @@ def build_dict_containers(containers):
 	return dict_containers
 
 def normalize_container(container):
-	attr_as_is = ['name', 'daemon', 'registry', 'image', 'tag', 'environment_variables', 'patches', 'args']
+	attr_as_is = ['name', 'daemon', 'registry', 'image', 'tag', 'environment_variables', 'patches', 'args', 'extra_options']
 	n_container = dict([(key, container[key]) for key in attr_as_is if key in container])
 	
 	normalize_volumes(n_container, container)
@@ -478,6 +479,13 @@ def build_docker_run(dict_container):
 		variables = container['environment_variables']
 		for key in variables:
 			cmd += ['-e', '{0}={1}'.format(key, variables[key])]
+
+	if 'extra_options' in container:
+		extra_options = container['extra_options']
+		if isinstance(extra_options, basestring):
+			cmd += [extra_options]
+		elif isinstance(extra_options, list):
+			cmd += extra_options
 
 	if 'patches' in container:
 		image = get_patched_image_name(dict_container)
