@@ -5,6 +5,9 @@
 - name: registra o repositório yum oficial do docker
   copy: src=docker.repo dest=/etc/yum.repos.d/docker.repo owner=root group=root mode=0644
 
+- name: garante que não há versões não-oficiais preexistentes do docker
+  yum: name=docker-io state=absent
+
 - name: instala o docker
   yum: name=docker-engine state=present
 

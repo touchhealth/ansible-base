@@ -10,7 +10,7 @@ import tempfile
 def main():
 	module = AnsibleModule(
 		argument_spec = dict(
-			state = dict(default = 'present', choices = ['present', 'absent']),
+			state = dict(default = 'present', choices = ['present', 'prepared', 'absent']),
 			containers = dict(required = True),
 			required_restart = dict(required = False),
 			plan_file = dict(default = '/tmp/docker_containers_execution_plan')
@@ -44,14 +44,49 @@ def main():
 
 def run_complex_command(module, cmd):
 	if 'type' not in cmd:
-		return 1, None, 'No type defined in custom command'
+		return 1, None, 'No type defined in complex command'
 
 	cmd_type = cmd['type']
+	args = cmd['args']
+
 	if cmd_type == 'patch_image':
-		return run_patch_image(module, cmd['args'])
+		return run_patch_image(module, args)
+
 	if cmd_type == 'remove_images':
-		return run_remove_images(module, cmd['args'])
+		return run_remove_images(module, args)
+
+	if cmd_type == 'stop_container':
+		return run_stop_container(module, args)
+
+	if cmd_type == 'start_container':
+		return run_start_container(module, args)
+
 	return 1, None, 'Unknown command type: {0}'.format(cmd_type)
+
+def run_start_container(module, args):
+	cmd = args['cmd']
+
+	# make sure there's not container with its name
+	rc, out, err = run_stop_container(module, args)
+
+	if rc != 0:
+		return rc, out, err
+
+	return module.run_command(cmd)
+
+def run_stop_container(module, args):
+	container_name = args['container_name']
+	status, _, _ = inspect_container_state(module, container_name)
+
+	stop_cmds = build_stop_container_cmds(container_name, status)
+
+	for stop_cmd in stop_cmds:
+		rc, out, err = run_command(module, stop_cmd)
+
+		if rc != 0:
+			return rc, out, err
+
+	return 0, None, None
 
 def run_patch_image(module, args):
 	#   args = {
@@ -111,26 +146,37 @@ def run_remove_images(module, args):
 
 	for unused_image_id in unused_image_ids:
 		rc, out, err = module.run_command(['docker', 'rmi', unused_image_id])
+
+		# falhas em remocao de imagem serao ignoradas; pode acontecer da imagem 
+		# estar na stack de algum container sendo executado
+		
 		#if rc != 0:
 		#	return rc, out, err
 
 	return 0, None, None
+
+def run_command(module, cmd):
+	rc, out, err = 0, None, None
+
+	if not module.check_mode:
+		if isinstance(cmd, basestring) or isinstance(cmd, list):
+			rc, out, err = module.run_command(cmd)
+		elif isinstance(cmd, dict):
+			rc, out, err = run_complex_command(module, cmd)
+
+	return rc, out, err
 
 def execute_plan(module, plan, plan_file):
 	executed = []
 	failed_message = None
 
 	while plan:
-		cmd = plan.pop(0)
+		cmd = plan[0]
 
-		rc, out, err = 0, None, None
+		rc, out, err = run_command(module, cmd)
 
-		if not module.check_mode:
-			if isinstance(cmd, basestring) or isinstance(cmd, list):
-				rc, out, err = module.run_command(cmd)
-			elif isinstance(cmd, dict):
-				rc, out, err = run_complex_command(module, cmd)
 		if rc == 0:
+			plan.pop(0)
 			executed.append(cmd)
 			dump_plan(plan, plan_file)
 		else:
@@ -148,7 +194,7 @@ def load_plan(plan_file):
 
 def dump_plan(plan, plan_file):
 	with open(plan_file, 'w') as plan_file:
-		json.dump(plan, plan_file)
+		json.dump(plan, plan_file, indent=4, separators=(',', ': '))
 
 def build_plan(module, params):
 	state = params['state']
@@ -161,16 +207,19 @@ def build_plan(module, params):
 
 	decide_containers_to_update(module, containers, dict_containers, required_restart, state)
 	
-	stop_cmds = stop_containers(containers, dict_containers)
+	stop_cmds = plan_stop_containers(containers, dict_containers)
 
-	prepare_cmds = prepare_images(containers, dict_containers, state)
+	prepare_cmds = plan_prepare_images(containers, dict_containers, state)
 
-	start_cmds, used_image_names = start_containers(containers, dict_containers, state)
+	start_cmds, used_image_names = plan_start_containers(containers, dict_containers, state)
 
-	rmi_cmds = remove_images(candidates_for_removal, used_image_names)
+	rmi_cmds = plan_remove_images(candidates_for_removal, used_image_names)
 
-	if stop_cmds or start_cmds:
-		return stop_cmds + prepare_cmds + rmi_cmds + start_cmds
+	if stop_cmds or start_cmds or prepare_cmds:
+		if state == 'prepared':
+			return prepare_cmds
+		else:
+			return prepare_cmds + stop_cmds + rmi_cmds + start_cmds
 	else:
 		return []
 
@@ -197,10 +246,10 @@ def boolean_value(value):
 	raise Exception('Failed to parse boolean value from ' + value)
 
 def should_update(dict_container, required_restart, state):
-	if state == 'present':
+	if state == 'present' or state == 'prepared':
 		if required_restart is not None and dict_container['name'] in required_restart and boolean_value(required_restart[dict_container['name']]):
 			return True
-		if dict_container['status'] == '':
+		if dict_container['status'] == '' or dict_container['status'] == 'stopped':
 			return True
 		if dict_container['current_commit'] != dict_container['latest_commit']:
 			return True
@@ -227,10 +276,10 @@ def inspect_containers_state(module, containers, dict_containers):
 		
 		dict_container['latest_commit'] = latest_commit
 
-def prepare_images(containers, dict_containers, state):
+def plan_prepare_images(containers, dict_containers, state):
 	cmds = []
 	
-	if state == 'present':
+	if state == 'present' or state == 'prepared':
 		for container in containers:
 			container_name = container['name']
 			dict_container = dict_containers[container_name]
@@ -240,6 +289,7 @@ def prepare_images(containers, dict_containers, state):
 				if 'patches' in dict_container['container']:
 					cmds.append(dict(
 						type = 'patch_image',
+						comment = 'Tarefa para executar build de patches nas imagens docker',
 						args = dict(
 							image = dict_container['image'],
 							patches = dict_container['container']['patches'],
@@ -248,8 +298,7 @@ def prepare_images(containers, dict_containers, state):
 					))
 	return cmds
 
-
-def start_containers(containers, dict_containers, state):
+def plan_start_containers(containers, dict_containers, state):
 	cmds = []
 	used_image_names = []
 	
@@ -259,7 +308,7 @@ def start_containers(containers, dict_containers, state):
 			dict_container = dict_containers[container_name]
 
 			if dict_container['must_be_updated']:
-				cmd, used_image_name = build_docker_run(dict_container)
+				cmd, used_image_name = plan_start_container(dict_container)
 				cmds.append(cmd)
 				used_image_names.append(used_image_name)
 	
@@ -268,27 +317,37 @@ def start_containers(containers, dict_containers, state):
 # a imagem com patch sera montada sem endereco do registro, com o nome original,
 # e a tag sera a tag original + a hash dos patches; caso algum arquivo do patch
 # seja diferente, o build do proprio docker devera provocar a renomeacao da imagem 
-# nova para uma a tag previamente existente
+# nova para uma tag previamente existente
 def get_patched_image_name(dict_container):
 	container = dict_container['container']
 	tag = '{0}_{1}'.format(container['tag'], json_hash(container['patches']))
 	return '{0}:{1}'.format(container['image'], tag)
 
-def stop_containers(containers, dict_containers):
+def plan_stop_containers(containers, dict_containers):
 	cmds = []
 	
 	for container in reversed(containers):
 		container_name = container['name']
 		dict_container = dict_containers[container_name]
-		
+
 		if dict_container['must_be_updated']:
-			status = dict_container['status']
-			
-			if status == 'running':
-				cmds.append([ 'docker', 'stop', container_name ])
-			if status != '':
-				cmds.append([ 'docker', 'rm', '-fv', container_name ])
-				
+			cmds += plan_stop_container(container_name)
+
+	return cmds
+
+def plan_stop_container(container_name):
+	cmds = []
+
+	cmds.append(
+		dict(
+			type = 'stop_container',
+			comment = 'Para e remove um container existente',
+			args = dict(
+				container_name = container_name
+			)
+		)
+	)
+
 	return cmds
 
 def inspect_container_state(module, container_name):
@@ -312,6 +371,7 @@ def inspect_container_state(module, container_name):
 def get_latest_commit(registry, image, tag):
 	h = httplib2.Http()
 	url = "http://{0}/v2/{1}/manifests/{2}".format(registry, image, tag)
+
 	try:
 		headers, content = h.request(url, "GET")
 		manifest = json.loads(content)
@@ -352,11 +412,12 @@ def get_used_image_ids(module):
 
 	return used_image_ids
 
-def remove_images(candidates_for_removal, used_image_names):
+def plan_remove_images(candidates_for_removal, used_image_names):
 	cmds = []
 
 	cmds.append(dict(
 		type = 'remove_images',
+		comment = 'Tarefa para remover as imagens que nao serao mais utilizadas',
 		args = dict(
 			candidates_for_removal = candidates_for_removal,
 			used_image_names = used_image_names
@@ -434,7 +495,7 @@ def normalize_list_of_dicts(n_container, container, name, keys, sort_key):
 	
 	n_container[name] = n_list
 
-def build_docker_run(dict_container):
+def plan_start_container(dict_container):
 	container = dict_container['container']
 	
 	cmd = ['docker', 'run', '--name', container['name']]
@@ -491,12 +552,36 @@ def build_docker_run(dict_container):
 		image = get_patched_image_name(dict_container)
 	else:
 		image = dict_container['image']
+
 	cmd += [image]
 	
 	if 'args' in container:
-		cmd += container['args']
+		args = container['args']
+		if isinstance(args, basestring):
+			cmd += [args]
+		elif isinstance(args, list):
+			cmd += args
 
-	return cmd, image
+	complex_command = dict(
+		type = 'start_container',
+		comment = 'Tarefa para iniciar o container; ela pode provocar tambem a remocao de algum container de mesmo nome preexistente',
+		args = dict(
+			cmd = cmd,
+			container_name = container['name']
+		)
+	)
+
+	return complex_command, image
+
+def build_stop_container_cmds(container_name, status):
+	cmds = []
+
+	if status == 'running':
+		cmds.append([ 'docker', 'stop', container_name ])
+	if status != '':
+		cmds.append([ 'docker', 'rm', '-fv', container_name ])
+
+	return cmds
 
 def docker_inspect_label(module, label_name, name):
 	label = ''
