@@ -1,0 +1,15 @@
+---
+- name: iptables funcionando
+  service: name=iptables state=started
+
+- name: Remove regras permanentes de reject do iptables
+  lineinfile: dest=/etc/sysconfig/iptables regexp=icmp-host-prohibited state=absent
+
+- name: Lista regras ativas do iptables
+  shell: iptables -L
+  changed_when: no
+  register: iptables_rules
+
+- name: Remove regras ativas de reject do iptables
+  shell: iptables -D FORWARD -j REJECT --reject-with icmp-host-prohibited; iptables -D INPUT -j REJECT --reject-with icmp-host-prohibited
+  when: "'icmp-host-prohibited' in iptables_rules.stdout"
