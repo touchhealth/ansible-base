@@ -1,0 +1,3 @@
+---
+docker_bridge_ip: 172.17.42.1
+docker_bridge_cidr: "{{ docker_bridge_ip }}/16"

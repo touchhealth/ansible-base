@@ -23,6 +23,24 @@
 - name: usuario inovapar no grupo docker
   user: name=inovapar groups=docker append=yes
 
+- name: Configurações do daemon do docker
+  lineinfile: regexp='other_args' dest=/etc/sysconfig/docker line='other_args="--bip={{ docker_bridge_cidr }} --dns {{ docker_bridge_ip }}"'
+  register: docker_config
+
+- name: Checa se bridge docker ja existe
+  shell: "ifconfig docker0 | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}'"
+  changed_when: no
+  ignore_errors: yes
+  when: docker_config.changed
+
+- name: Remove bridge existente se configuracao foi alterada
+  shell: ip link set docker0 down && brctl delbr docker0 
+  when: docker_config.changed
+
+- name: Para daemon do docker se configuracao foi alterada
+  service: name=docker state=stopped
+  when: docker_config.changed
+
 - name: inicializa e habilita docker
   service: name=docker state=started enabled=yes
 
