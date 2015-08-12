@@ -32,10 +32,11 @@
   changed_when: no
   ignore_errors: yes
   when: docker_config.changed
+  register: docker_bridge
 
 - name: Remove bridge existente se configuracao foi alterada
   shell: ip link set docker0 down && brctl delbr docker0 
-  when: docker_config.changed
+  when: docker_bridge is defined and docker_bridge.stdout != ''
 
 - name: Para daemon do docker se configuracao foi alterada
   service: name=docker state=stopped
