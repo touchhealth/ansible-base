@@ -57,5 +57,5 @@
       host={{ ansible_ssh_host }}
       port={{ ansible_ssh_port|default("22") }}
       delay=1
-      timeout=300
-  when: kernel.changed or grub.changed
+      timeout=600
+  when: kernel.changed or grub.changed or kernel_ativo.stdout != kernel_version
