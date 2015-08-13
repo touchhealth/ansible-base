@@ -41,9 +41,14 @@
   lineinfile: dest=/boot/grub/grub.conf regexp=^default line=default={% for k in grub_kernels.stdout_lines %}{% if k == kernel_version %}{{ loop.index0 }}{% endif %}{% endfor %}
   register: grub
 
+- name: verifica kernel que esta sendo executado
+  shell: uname -r
+  changed_when: False
+  register: kernel_ativo
+
 - name: reinicia se alterado o kernel
   command: shutdown -r now "Ansible updates triggered"
-  when: kernel.changed or grub.changed
+  when: kernel.changed or grub.changed or kernel_ativo.stdout != kernel_version
 
 - name: Wait for server to restart
   sudo: no
