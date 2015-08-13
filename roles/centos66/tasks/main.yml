@@ -2,6 +2,9 @@
 - name: garante ultima versao do sistema como centos 6.6
   copy: dest=/etc/yum/vars/releasever content=6.6
 
+- name: arquivo de repositorio base do centos
+  copy: src=CentOS-Base.repo dest=/etc/yum.repos.d/CentOS-Base.repo
+
 - name: atualiza sistema
   yum: name=* state=latest
 
