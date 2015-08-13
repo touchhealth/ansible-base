@@ -15,20 +15,22 @@
 - name: verifica se kernel-headers existe
   shell: rpm -q kernel-headers
   register: kernel_headers_check
+  ignore_errors: yes
   changed_when: False
 
 - name: atualiza kernel-headers
   yum: name=kernel-headers-{{ kernel_version }} state=present
-  when: kernel_headers_check.rc == 0
+  when: kernel_headers_check is defined and kernel_headers_check.rc == 0
 
 - name: verifica se kernel-devel existe
   shell: rpm -q kernel-devel
   register: kernel_devel_check
+  ignore_errors: yes
   changed_when: False
 
 - name: garante versao do kernel-devels
   yum: name=kernel-devel-{{ kernel_version }} state=present
-  when: kernel_devel_check.rc == 0
+  when: kernel_devel_check is defined and kernel_devel_check.rc == 0
 
 - name: lista kernels reconhecidos pelo grub
   shell: sed -rn 's/^title.*\((.*)\)/\1/p' /boot/grub/grub.conf 
