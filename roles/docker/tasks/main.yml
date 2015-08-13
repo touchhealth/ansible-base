@@ -48,3 +48,6 @@
 # dependência para recuperar os manifests das imagens, usado depois também pelo app-state
 - name: instala python-httplib2
   yum: name=python-httplib2 state=present
+
+- name: expoe as variaveis docker_bridge_ip e docker_bridge_cidr
+  set_fact: docker_bridge_ip="{{ docker_bridge_ip }}" docker_bridge_cidr="{{ docker_bridge_cidr }}"
