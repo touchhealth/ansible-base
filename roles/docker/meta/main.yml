@@ -1,9 +1,15 @@
 ---
 dependencies:
-  - role: centos66
+  - role: centos67
     when: ansible_distribution == 'CentOS' and
-      (ansible_distribution_version == "6.4" or ansible_distribution_version == "6.5" or ansible_distribution_version == "6.6")
+      (ansible_distribution_version == "6.4" or
+       ansible_distribution_version == "6.5" or
+       ansible_distribution_version == "6.6" or
+       ansible_distribution_version == "6.7")
 
   - role: iptables
     when: ansible_distribution == 'CentOS' and
-      (ansible_distribution_version == "6.4" or ansible_distribution_version == "6.5" or ansible_distribution_version == "6.6")
+      (ansible_distribution_version == "6.4" or
+       ansible_distribution_version == "6.5" or
+       ansible_distribution_version == "6.6" or
+       ansible_distribution_version == "6.7")

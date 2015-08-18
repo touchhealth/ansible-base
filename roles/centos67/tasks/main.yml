@@ -1,0 +1,61 @@
+---
+- name: garante que não há variáveis de versão hard-coded
+  file: path=/etc/yum/vars/releasever state=absent
+
+- name: arquivo de repositório base do centos
+  copy: src=CentOS-Base.repo dest=/etc/yum.repos.d/CentOS-Base.repo
+
+- name: sistema atualizado
+  yum: name=* state=latest
+
+- name: garante versao do kernel
+  yum: name=kernel-{{ kernel_version }} state=present
+  register: kernel
+
+- name: verifica se kernel-headers existe
+  shell: rpm -q kernel-headers
+  register: kernel_headers_check
+  ignore_errors: yes
+  changed_when: False
+
+- name: atualiza kernel-headers
+  yum: name=kernel-headers-{{ kernel_version }} state=present
+  when: kernel_headers_check is defined and kernel_headers_check.rc == 0
+
+- name: verifica se kernel-devel existe
+  shell: rpm -q kernel-devel
+  register: kernel_devel_check
+  ignore_errors: yes
+  changed_when: False
+
+- name: garante versao do kernel-devels
+  yum: name=kernel-devel-{{ kernel_version }} state=present
+  when: kernel_devel_check is defined and kernel_devel_check.rc == 0
+
+- name: lista kernels reconhecidos pelo grub
+  shell: sed -rn 's/^title.*\((.*)\)/\1/p' /boot/grub/grub.conf 
+  changed_when: False
+  register: grub_kernels
+
+- name: define kernel para boot
+  lineinfile: dest=/boot/grub/grub.conf regexp=^default line=default={% for k in grub_kernels.stdout_lines %}{% if k == kernel_version %}{{ loop.index0 }}{% endif %}{% endfor %}
+  register: grub
+
+- name: verifica kernel que esta sendo executado
+  shell: uname -r
+  changed_when: False
+  register: kernel_ativo
+
+- name: reinicia se alterado o kernel
+  command: shutdown -r now "Ansible updates triggered"
+  when: kernel.changed or grub.changed or kernel_ativo.stdout != kernel_version
+
+- name: Wait for server to restart
+  sudo: no
+  local_action:
+    module: wait_for
+      host={{ ansible_ssh_host }}
+      port={{ ansible_ssh_port|default("22") }}
+      delay=20
+      timeout=600
+  when: kernel.changed or grub.changed or kernel_ativo.stdout != kernel_version
