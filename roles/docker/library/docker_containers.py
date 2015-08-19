@@ -23,7 +23,14 @@ def main():
 
 	plan = []
 	if os.path.exists(plan_file):
-		plan = load_plan(plan_file)
+		existing_plan = load_plan(plan_file)
+		config_hash = build_config_hash(params)
+
+		if existing_plan['config_hash'] == config_hash:
+			plan = existing_plan
+		else:
+			plan = build_plan(module, params)
+			dump_plan(plan, plan_file)
 	else:
 		plan = build_plan(module, params)
 		dump_plan(plan, plan_file)
@@ -170,20 +177,22 @@ def execute_plan(module, plan, plan_file):
 	executed = []
 	failed_message = None
 
-	while plan:
-		cmd = plan[0]
+	cmds = plan['cmds']
+
+	while cmds:
+		cmd = cmds[0]
 
 		rc, out, err = run_command(module, cmd)
 
 		if rc == 0:
-			plan.pop(0)
+			cmds.pop(0)
 			executed.append(cmd)
 			dump_plan(plan, plan_file)
 		else:
 			failed_message = err
 			break
 
-	if not plan:
+	if not cmds:
 		os.remove(plan_file)
 		
 	return executed, failed_message
@@ -201,6 +210,8 @@ def build_plan(module, params):
 	containers = params['containers']
 	required_restart = params['required_restart']
 
+	config_hash = build_config_hash(params)
+
 	dict_containers = build_dict_containers(containers)
 
 	candidates_for_removal = get_candidates_for_removal(module)
@@ -215,13 +226,24 @@ def build_plan(module, params):
 
 	rmi_cmds = plan_remove_images(candidates_for_removal, used_image_names)
 
+	cmds = []
+
 	if stop_cmds or start_cmds or prepare_cmds:
 		if state == 'prepared':
-			return prepare_cmds
+			cmds = prepare_cmds
 		else:
-			return prepare_cmds + stop_cmds + rmi_cmds + start_cmds
-	else:
-		return []
+			cmds = prepare_cmds + stop_cmds + rmi_cmds + start_cmds
+
+	return dict(
+		config_hash = config_hash,
+		cmds = cmds
+	)
+
+def build_config_hash(params):
+	return json_hash(dict(
+		state = params['state'],
+		containers = [ normalize_container(c) for c in params['containers'] ]
+	))
 
 def decide_containers_to_update(module, containers, dict_containers, required_restart, state):
 	inspect_containers_state(module, containers, dict_containers)
