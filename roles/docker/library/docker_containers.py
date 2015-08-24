@@ -524,10 +524,8 @@ def plan_start_container(dict_container):
 	
 	cmd += ['--label', '{0}={1}'.format('configHash', dict_container['latest_config_hash'])]
 	
-	cmd += ['--restart', 'always']
-	
 	if 'daemon' in container and container['daemon']:
-		cmd += ['-d']
+		cmd += ['-d', '--restart', 'always']
 	
 	if 'ports' in container:
 		for port in container['ports']:
