@@ -20,9 +20,6 @@
 - name: grupo docker
   group: name=docker state=present
 
-- name: usuario inovapar no grupo docker
-  user: name=inovapar groups=docker append=yes
-
 - name: Configurações do daemon do docker
   lineinfile:
     regexp: other_args
