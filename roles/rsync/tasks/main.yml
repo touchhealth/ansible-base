@@ -1,0 +1,8 @@
+---
+- name: rsync (redhat)
+  yum: name=rsync state=present
+  when: ansible_os_family == 'RedHat'
+
+- name: rsync (debian)
+  apt: name=rsync state=present
+  when: ansible_os_family == 'Debian'
