@@ -1,0 +1,10 @@
+---
+- name: verifica se apache existe (debian)
+  command: dpkg-query -l apache2
+  register: apache2_check
+  changed_when: no
+  ignore_errors: yes 
+
+- name: servico apache externo parado (debian)
+  service: name=apache2 state=stopped enabled=no
+  when: apache2_check.rc == 0

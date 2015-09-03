@@ -1,0 +1,10 @@
+---
+- name: verifica se apache existe (redhat)
+  command: rpm -q httpd
+  register: httpd_check
+  changed_when: no
+  ignore_errors: yes 
+
+- name: servico apache externo parado (redhat)
+  service: name=httpd state=stopped enabled=no
+  when: httpd_check.rc == 0
