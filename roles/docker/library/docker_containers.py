@@ -6,6 +6,7 @@ import httplib2
 import os
 import shutil
 import tempfile
+import traceback
 
 def main():
 	module = AnsibleModule(
@@ -13,6 +14,7 @@ def main():
 			state = dict(default = 'present', choices = ['present', 'prepared', 'absent']),
 			containers = dict(required = True),
 			required_restart = dict(required = False),
+			remove_unused = dict(default = True),
 			plan_file = dict(default = '/tmp/docker_containers_execution_plan')
 		),
 		supports_check_mode = True
@@ -56,6 +58,9 @@ def run_complex_command(module, cmd):
 	cmd_type = cmd['type']
 	args = cmd['args']
 
+	if cmd_type == 'pull_image':
+		return run_pull_image(module, args)
+
 	if cmd_type == 'patch_image':
 		return run_patch_image(module, args)
 
@@ -69,6 +74,18 @@ def run_complex_command(module, cmd):
 		return run_start_container(module, args)
 
 	return 1, None, 'Unknown command type: {0}'.format(cmd_type)
+
+def run_pull_image(module, args):
+	image = args['image']
+
+	rc, out, err = module.run_command(['docker', 'pull', image])
+
+	inspect_rc, _, _ = docker_inspect(module, "{{.Id}}", image)
+
+	if inspect_rc == 0:
+		return 0, None, None
+
+	return rc, out, err
 
 def run_start_container(module, args):
 	cmd = args['cmd']
@@ -209,6 +226,7 @@ def build_plan(module, params):
 	state = params['state']
 	containers = params['containers']
 	required_restart = params['required_restart']
+	remove_unused = params['remove_unused']
 
 	config_hash = build_config_hash(params)
 
@@ -232,7 +250,10 @@ def build_plan(module, params):
 		if state == 'prepared':
 			cmds = prepare_cmds
 		else:
-			cmds = prepare_cmds + stop_cmds + rmi_cmds + start_cmds
+			if boolean_value(remove_unused):
+				cmds = prepare_cmds + stop_cmds + rmi_cmds + start_cmds
+			else:
+				cmds = prepare_cmds + stop_cmds + start_cmds
 
 	return dict(
 		config_hash = config_hash,
@@ -294,7 +315,10 @@ def inspect_containers_state(module, containers, dict_containers):
 		dict_container['current_commit'] = current_commit
 		dict_container['current_config_hash'] = current_config_hash
 		
-		latest_commit = get_latest_commit(container['registry'], container['image'], container['tag'])
+		try:
+			latest_commit = get_latest_commit(container, dict_container['image'])
+		except Exception as e:
+			latest_commit = docker_inspect_label(module, 'commitId', dict_container['image'])
 		
 		dict_container['latest_commit'] = latest_commit
 
@@ -307,7 +331,13 @@ def plan_prepare_images(containers, dict_containers, state):
 			dict_container = dict_containers[container_name]
 			
 			if dict_container['must_be_updated']:
-				cmds.append(['docker', 'pull', dict_container['image']])
+				cmds.append(dict(
+					type = 'pull_image',
+					comment = 'Tarefa para garantir a existencia da imagem',
+					args = dict(
+						image = dict_container['image']
+					)
+				))
 				if 'patches' in dict_container['container']:
 					cmds.append(dict(
 						type = 'patch_image',
@@ -383,32 +413,41 @@ def inspect_container_state(module, container_name):
 			status = 'running'
 		else:
 			status = 'stopped'
-		
+
 		current_commit = docker_inspect_label(module, 'commitId', container_name)
+
+		if current_commit == '':
+			image_id = docker_inspect(module, '{{.Image}}', container_name)[1]
+			
+			current_commit = docker_inspect_label(module, 'commitId', image_id)
 		
 		current_config_hash = docker_inspect_label(module, 'configHash', container_name)
 	
 	return status, current_commit, current_config_hash
 
-def get_latest_commit(registry, image, tag):
-	h = httplib2.Http()
-	url = "http://{0}/v2/{1}/manifests/{2}".format(registry, image, tag)
+def get_latest_commit(container, image):
+	if 'registry' in container:
+		h = httplib2.Http()
 
-	try:
-		headers, content = h.request(url, "GET")
-		manifest = json.loads(content)
-		data = json.loads(manifest['history'][0]['v1Compatibility'])
-	
-		config = data['config']
-		labels_key = 'Labels'
-		commit_id_key = 'commitId'
+		tag = container['tag'] if 'tag' in container else 'latest'
+		url = "http://{0}/v2/{1}/manifests/{2}".format(container['registry'], container['image'], tag)
 
-		if labels_key in config and commit_id_key in config[labels_key]:
-			return config[labels_key][commit_id_key]
-		return ''
-	except Exception as e:
-		import traceback
-		raise Exception('Erro tentando acessar ' + url + '\n' + traceback.format_exc())
+		try:
+			headers, content = h.request(url, "GET")
+			manifest = json.loads(content)
+			data = json.loads(manifest['history'][0]['v1Compatibility'])
+		
+			config = data['config']
+			labels_key = 'Labels'
+			commit_id_key = 'commitId'
+
+			if labels_key in config and commit_id_key in config[labels_key]:
+				return config[labels_key][commit_id_key]
+			return ''
+		except Exception as e:
+			raise Exception('Erro tentando acessar ' + url + '\n' + traceback.format_exc())
+
+	return docker_inspect_label(module, 'commitId', image)
 
 def get_candidates_for_removal(module):
 	image_ids = get_image_ids(module)
@@ -453,9 +492,21 @@ def build_dict_containers(containers):
 	
 	for container in containers:
 		n_container = normalize_container(container)
+		
+		if 'registry' in container:
+			if 'tag' in container:
+				image = '{0}/{1}:{2}'.format(container['registry'], container['image'], container['tag'])
+			else:
+				image = '{0}/{1}'.format(container['registry'], container['image'])
+		else:
+			if 'tag' in container:
+				image = '{1}:{2}'.format(container['image'], container['tag'])
+			else:
+				image = container['image']
+
 		dict_container = dict(
 			name = n_container['name'],
-			image = '{0}/{1}:{2}'.format(container['registry'], container['image'], container['tag']),
+			image = image,
 			container = n_container,
 			required_by = [],
 			latest_config_hash = json_hash(n_container),

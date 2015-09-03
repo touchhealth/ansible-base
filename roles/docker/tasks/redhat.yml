@@ -1,0 +1,50 @@
+---
+- name: instala epel
+  yum: name=http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noarch.rpm state=present
+
+- name: registra o repositório yum oficial do docker
+  copy: src=docker.repo dest=/etc/yum.repos.d/docker.repo owner=root group=root mode=0644
+
+- name: garante que não há versões não-oficiais preexistentes do docker
+  yum: name=docker-io state=absent
+
+- name: instala o docker
+  yum: name=docker-engine state=present
+
+- name: garante a existência da pasta /opt/docker
+  file: dest=/opt/docker state=directory
+
+- name: link simbolico para docker
+  file: dest=/var/lib/docker src=/opt/docker state=link
+
+- name: grupo docker
+  group: name=docker state=present
+
+- name: Configurações do daemon do docker
+  lineinfile:
+    regexp: other_args
+    dest: /etc/sysconfig/docker
+    line: other_args="--bip={{ docker_bridge_cidr }} --dns {{ docker_bridge_ip }} --dns 8.8.8.8 --default-ulimit nofile=65536:65536 --default-ulimit core=-1:-1"
+  register: docker_config
+
+- name: Checa se bridge docker ja existe
+  shell: "ifconfig docker0 | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}'"
+  changed_when: no
+  ignore_errors: yes
+  when: docker_config.changed
+  register: docker_bridge
+
+- name: Remove bridge existente se configuracao foi alterada
+  shell: ip link set docker0 down && brctl delbr docker0 
+  when: docker_bridge is defined and docker_bridge.stdout != ''
+
+- name: Para daemon do docker se configuracao foi alterada
+  service: name=docker state=stopped
+  when: docker_config.changed
+
+- name: inicializa e habilita docker
+  service: name=docker state=started enabled=yes
+
+# dependência para recuperar os manifests das imagens, usado depois também pelo app-state
+- name: instala python-httplib2
+  yum: name=python-httplib2 state=present
