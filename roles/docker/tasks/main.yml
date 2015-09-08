@@ -27,7 +27,7 @@
   lineinfile:
     regexp: other_args
     dest: /etc/sysconfig/docker
-    line: other_args="--bip={{ docker_bridge_cidr }} --dns {{ docker_bridge_ip }} --default-ulimit nofile=65536:65536 --default-ulimit core=-1:-1"
+    line: other_args="--bip={{ docker_bridge_cidr }} --dns {{ docker_bridge_ip }} --dns 8.8.8.8 --dns 8.8.4.4 --default-ulimit nofile=65536:65536 --default-ulimit core=-1:-1"
   register: docker_config
 
 - name: Checa se bridge docker ja existe
@@ -38,7 +38,7 @@
   register: docker_bridge
 
 - name: Remove bridge existente se configuracao foi alterada
-  shell: ip link set docker0 down && brctl delbr docker0 
+  shell: ip link set docker0 down && brctl delbr docker0
   when: docker_bridge is defined and docker_bridge.stdout != ''
 
 - name: Para daemon do docker se configuracao foi alterada
