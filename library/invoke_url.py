@@ -1,4 +1,5 @@
-#!/usr/bin/python
+#!/usr/bin/python -tt
+# -*- coding: utf-8 -*-
 
 import httplib2
 import urllib
