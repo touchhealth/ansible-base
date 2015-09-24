@@ -1,6 +1,6 @@
 ---
-- name: garante que não há variáveis de versão hard-coded
-  file: path=/etc/yum/vars/releasever state=absent
+- name:  garante ultima versao do sistema como centos 6.7
+  copy: dest=/etc/yum/vars/releasever content=6.7
 
 - name: arquivo de repositório base do centos
   copy: src=CentOS-Base.repo dest=/etc/yum.repos.d/CentOS-Base.repo
@@ -10,7 +10,7 @@
   when: update_os
 
 - name: garante versao do kernel
-  yum: name=kernel-{{ kernel_version }} state=present
+  yum: name=kernel-{{ kernel_version }} state=present enablerepo=updates
   when: update_kernel and ansible_virtualization_type != 'openvz'
   register: kernel
 
@@ -22,7 +22,7 @@
   changed_when: False
 
 - name: atualiza kernel-headers
-  yum: name=kernel-headers-{{ kernel_version }} state=present
+  yum: name=kernel-headers-{{ kernel_version }} state=present enablerepo=updates
   when: update_kernel and ansible_virtualization_type != 'openvz' and (kernel_headers_check is defined and kernel_headers_check.rc == 0)
 
 - name: verifica se kernel-devel existe
@@ -33,7 +33,7 @@
   when: update_kernel and ansible_virtualization_type != 'openvz'
 
 - name: garante versao do kernel-devels
-  yum: name=kernel-devel-{{ kernel_version }} state=present
+  yum: name=kernel-devel-{{ kernel_version }} state=present enablerepo=updates
   when: update_kernel and ansible_virtualization_type != 'openvz' and (kernel_devel_check is defined and kernel_devel_check.rc == 0)
 
 - name: lista kernels reconhecidos pelo grub
