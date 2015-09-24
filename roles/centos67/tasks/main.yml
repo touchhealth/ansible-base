@@ -12,7 +12,6 @@
 - name: garante versao do kernel
   yum: name=kernel-{{ kernel_version }} state=present enablerepo=updates
   when: update_kernel and ansible_virtualization_type != 'openvz'
-  register: kernel
 
 - name: verifica se kernel-headers existe
   shell: rpm -q kernel-headers
@@ -55,7 +54,7 @@
 
 - name: reinicia se alterado o kernel
   command: shutdown -r now "Ansible updates triggered"
-  when: update_kernel and ansible_virtualization_type != 'openvz' and (kernel.changed or grub.changed or kernel_ativo.stdout != kernel_version)
+  when: update_kernel and ansible_virtualization_type != 'openvz' and (kernel_ativo.stdout != kernel_version)
 
 - name: Wait for server to restart
   sudo: no
@@ -65,4 +64,4 @@
       port={{ ansible_ssh_port|default("22") }}
       delay=20
       timeout=600
-  when: update_kernel and ansible_virtualization_type != 'openvz' and (kernel.changed or grub.changed or kernel_ativo.stdout != kernel_version)
+  when: update_kernel and ansible_virtualization_type != 'openvz' and (kernel_ativo.stdout != kernel_version)
