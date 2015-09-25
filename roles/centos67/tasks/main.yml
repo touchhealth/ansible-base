@@ -1,6 +1,6 @@
 ---
-- name:  garante ultima versao do sistema como centos 6.7
-  copy: dest=/etc/yum/vars/releasever content=6.7
+- name: garante que não há variáveis de versão hard-coded
+  file: path=/etc/yum/vars/releasever state=absent
 
 - name: arquivo de repositório base do centos
   copy: src=CentOS-Base.repo dest=/etc/yum.repos.d/CentOS-Base.repo
