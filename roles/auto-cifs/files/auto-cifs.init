@@ -1,0 +1,101 @@
+#!/bin/bash
+#
+# Daemon Name: auto-cifs
+#  
+# chkconfig: 2345 96 4
+# description: Watch for changes in /opt/appdata/config/auto-cifs/mappings
+
+# Source function library.
+. /etc/init.d/functions
+
+
+prog=auto-cifs
+pidfile=/var/run/$prog.pid
+lockfile=/var/lock/subsys/$prog
+logfile=/tmp/$prog.log
+
+start() {
+    status
+    if [ $? -ne 0 ]; then
+        # Start our daemon daemon
+        echo -n $"Starting $prog: "
+        /opt/bin/${prog} >> $logfile 2>&1 &
+    
+        rc=$?
+    
+        echo $! > $pidfile
+    
+        #If all is well touch the lock file
+        if [ $rc -eq 0 ]; then
+          touch $lockfile
+          success
+        else
+          failure
+        fi
+    
+        echo
+        return $rc
+    else
+        echo "$prog is running..."
+    fi
+}
+
+stop() {
+    echo -n $"Shutting down $prog: "
+    kill $(cat $pidfile) >> $logfile 2>&1
+
+    rc=$?
+
+    #If all is well remove the lockfile
+    if [ $rc -eq 0 ]; then
+        rm -f $lockfile
+        rm -f $pidfile
+        success
+    else
+        failure
+    fi
+
+    echo
+    return $rc
+}
+
+status() {
+    if [ -f $pidfile ]; then
+        pid=$(cat $pidfile)
+        kill -0 $pid >> $logfile  2>&1
+        if [ $? -eq 0 ]; then
+            return 0
+        else
+            return 1
+        fi
+    else
+        return 2
+    fi
+}
+
+# See how we were called.
+case "$1" in
+  start)
+        start
+        ;;
+  stop)
+        stop
+        ;;
+  status)
+        status
+        if [ $? -eq 0 ]; then
+            echo "$prog (pid $pid) is running"
+        elif [ $? -eq 1 ]; then
+            echo "$prog dead but pid file exists"
+        else
+            echo "$prog is not running"
+        fi
+        ;;
+  restart)
+        stop
+        start
+        ;;
+   *)
+        echo $"Usage: $0 {start|stop|status|restart}"
+        exit 2
+esac

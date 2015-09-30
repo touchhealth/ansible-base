@@ -1,0 +1,17 @@
+---
+- name: epel
+  yum: name=https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm state=present
+
+- name: samba
+  yum: name={{ item }}
+  with_items:
+    - samba-client
+    - samba-common
+    - cifs-utils
+    - inotify-tools
+
+- name: init script do watch-autofs
+  copy: src=auto-cifs.init dest=/etc/init.d/auto-cifs mode="u=rwx,g=rx,o=r"
+
+- name: auto-cifs  habilitado e rodando
+  service: name=auto-cifs state=started enabled=yes

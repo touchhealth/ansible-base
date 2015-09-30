@@ -1,0 +1,23 @@
+---
+- include_vars: debian.yml
+  when: ansible_os_family == 'Debian'
+
+- include_vars: redhat.yml
+  when: ansible_os_family == 'RedHat'
+
+- name: Pasta de executáveis
+  file: path={{ auto_cifs_fs_root }}/opt/bin state=directory
+
+- name: Executáveis do auto-cifs
+  copy: src={{ item }} dest={{ auto_cifs_fs_root }}/opt/bin mode="u=rwx,g=rw,o=r"
+  with_items:
+    - auto-cifs
+
+- name: Pasta de configuração geral
+  file: path={{ auto_cifs_fs_root }}/opt/appdata/config/auto-cifs state=directory
+
+- include: redhat.yml
+  when: ansible_os_family == 'RedHat'
+
+- name: Expõe as variáveis do auto_cifs
+  set_fact: auto_cifs_fs_root="{{ auto_cifs_fs_root }}" auto_cifs_volumes="{{ auto_cifs_volumes }}"

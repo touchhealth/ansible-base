@@ -1,0 +1,7 @@
+---
+auto_cifs_extra_options:
+  - '--cap-add'
+  - 'SYS_ADMIN'
+
+  - '--cap-add'
+  - 'DAC_READ_SEARCH'

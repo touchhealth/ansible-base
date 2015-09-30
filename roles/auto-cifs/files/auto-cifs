@@ -1,0 +1,168 @@
+#!/bin/bash
+
+PID_FILE=/var/run/auto-cifs.pid
+MAPPINGS_FOLDER=/opt/appdata/config/auto-cifs
+MAPPINGS_FILE=${MAPPINGS_FOLDER}/mappings
+RUN_FOLDER=/var/run/auto-cifs
+WATCHERS_FOLDER=${RUN_FOLDER}/watchers
+LOCK_FILE=${RUN_FOLDER}/check.lock
+
+declare -A watchers_pids
+
+read_pids() {
+    if [ -d $WATCHERS_FOLDER ]; then
+        for file in $(ls $WATCHERS_FOLDER); do
+            watchers_pids[$file]=$(cat $WATCHERS_FOLDER/$file)
+        done
+    fi
+}
+
+to_pid_file() {
+  echo $1 | sed -e 's/\//_/g'
+}
+
+write_pid() {
+    if [ ! -d $WATCHERS_FOLDER ]; then
+        mkdir -p $WATCHERS_FOLDER
+    fi
+    local file=$(to_pid_file $1)
+    echo "$2" > $WATCHERS_FOLDER/$file
+}
+
+is_being_watched() {
+    read_pids
+    local file=$(to_pid_file $1)
+    if [ ! -z "${watchers_pids[$file]}" ]; then
+        kill -0 ${watchers_pids[$file]}
+        return $?
+    fi
+    return 1
+}
+
+main() {
+    trap '' SIGHUP
+    trap cleanup SIGINT SIGTERM
+
+    echo $$ > $PID_FILE
+
+    if [ ! -d $RUN_FOLDER ]; then
+        mkdir -p $RUN_FOLDER
+    fi
+
+    check
+
+    while read change; do
+        check
+    done < <(inotifywait -m -e delete,create,modify,moved_to $MAPPINGS_FOLDER)
+
+    cleanup 1
+}
+
+do_umount() {
+    umount $1
+    rm $WATCHERS_FOLDER/$(to_pid_file $1)
+}
+
+watch_unmount() {
+    if inotifywait -e unmount $1; then
+        check &
+    fi
+}
+
+do_mount() {
+    echo do_mount $@
+    local mount_point=$1
+    local share=$2
+    local options=$3
+    local should_mount=$4
+    if [ $should_mount == true ]; then
+        mount.cifs $share $mount_point -o "$options"
+
+        if [ $? -ne 0 ]; then
+            sleep 5
+            do_mount $@ &
+            return
+        fi
+    fi
+
+    if ! is_being_watched $mount_point; then
+        watch_unmount $mount_point &
+        watch_pid=$!
+        write_pid $mount_point $watch_pid
+    fi 
+}
+
+check() {
+    if [ -f $LOCK_FILE ]; then
+        return
+    fi
+
+    touch $LOCK_FILE
+
+    echo
+    echo "$(date)"
+
+    if [ -f $MAPPINGS_FILE ]; then
+        while read mount_point share options; do
+            echo
+
+            should_umount=false
+
+            if [[ $mount_point == \#* ]]; then
+                mount_point=${mount_point:1}
+                should_umount=true
+            fi
+
+            echo "Mount point: $mount_point"
+
+            if [ $should_umount == true ]; then
+                do_umount $mount_point
+            else
+                echo "Share: $share"
+                echo "Options: $options"
+
+                if [ ! -d $mount_point ]; then
+                    mkdir -p $mount_point
+                fi
+
+                should_mount=false
+
+                mount_result=$(mount | grep " $mount_point ")
+                has_mount_point=$?
+
+                if [ $has_mount_point -eq 0 ]; then
+                    same_mount_result=$(echo $mount_result | grep "$share ")
+                    same_share=$?
+
+                    if [ $same_share -ne 0 ]; then
+                        do_umount $mount_point
+                        should_mount=true
+                    fi
+                else
+                    should_mount=true
+                fi
+
+                do_mount $mount_point $share $options $should_mount &
+            fi
+        done <$MAPPINGS_FILE
+    fi
+
+    rm -f $LOCK_FILE
+}
+
+cleanup() {
+    trap - SIGINT SIGTERM
+    kill -s SIGTERM 0
+
+    if [ -d $WATCHERS_FOLDER ]; then
+        for file in $(ls $WATCHERS_FOLDER); do
+            rm $WATCHERS_FOLDER/$file
+        done
+    fi
+
+    [ -f $LOCK_FILE ] && rm $LOCK_FILE
+    [ -f $PID_FILE ] && rm $PID_FILE
+    return $1
+}
+
+main

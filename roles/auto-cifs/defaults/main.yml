@@ -1,0 +1,9 @@
+---
+auto_cifs_fs_root: ""
+
+auto_cifs_volumes:
+  - container: /opt/appdata/config/auto-cifs
+    host: "{{ auto_cifs_fs_root }}/opt/appdata/config/auto-cifs"
+  
+  - container: /opt/bin
+    host: "{{ auto_cifs_fs_root }}/opt/bin"
