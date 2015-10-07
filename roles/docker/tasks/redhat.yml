@@ -8,6 +8,9 @@
 - name: garante que não há versões não-oficiais preexistentes do docker
   yum: name=docker-io state=absent
 
+- name: instala o bridge-utils
+  yum: name=bridge-utils state=present
+
 - name: instala o docker
   yum: name=docker-engine state=present
 
@@ -24,7 +27,7 @@
   lineinfile:
     regexp: other_args
     dest: /etc/sysconfig/docker
-    line: other_args="--bip={{ docker_bridge_cidr }} --dns {{ docker_bridge_ip }} --dns 8.8.8.8 --default-ulimit nofile=65536:65536 --default-ulimit core=-1:-1{% if ansible_virtualization_type == 'openvz'  %} -s vfs{% endif %}"
+    line: other_args="--bip={{ docker_bridge_cidr }} --dns {{ docker_bridge_ip }} --dns 8.8.8.8 --default-ulimit nofile=65536:65536 --default-ulimit core=-1:-1 --insecure-registry localhost:5000{% if ansible_virtualization_type == 'openvz'  %} -s vfs{% endif %}"
   register: docker_config
 
 - name: Checa se bridge docker ja existe
